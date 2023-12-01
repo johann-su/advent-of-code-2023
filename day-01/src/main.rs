@@ -94,5 +94,10 @@ zoneight234
 
         let result = super::task_2(input);
         assert_eq!(result, 281);
+
+        let input = "twone";
+
+        let result = super::task_2(input);
+        assert_eq!(result, 21);
     }
 }
