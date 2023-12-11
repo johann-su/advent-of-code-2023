@@ -1,5 +1,4 @@
-use itertools::Itertools;
-use std::ops::Range;
+use std::collections::BTreeSet;
 
 use nom::{
     branch::permutation,
@@ -7,15 +6,102 @@ use nom::{
     character::complete::{alpha1, space1, u64},
     combinator::opt,
     multi::separated_list1,
-    sequence::{preceded, separated_pair},
+    sequence::preceded,
     IResult,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, PartialEq)]
 struct Conversion {
     src: u64,
     dest: u64,
     offset: u64,
+}
+
+impl Conversion {
+    fn convert(&self, input: u64) -> Option<u64> {
+        if self.src <= input && input < (self.src + self.offset) {
+            Some(input - self.src + self.dest)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct AlmanacMap(Vec<Conversion>);
+
+#[derive(Debug, PartialEq)]
+struct ValueRange {
+    start: u64,
+    length: u64,
+}
+
+impl AlmanacMap {
+    fn convert(&self, source: u64) -> u64 {
+        match self
+            .0
+            .iter()
+            .map(|entry| entry.convert(source))
+            .find_map(|e| e)
+        {
+            Some(dest) => dest,
+            None => source,
+        }
+    }
+
+    fn convert_range(&self, range: ValueRange) -> Vec<ValueRange> {
+        let mut slices = BTreeSet::new();
+        let range_end = range.start + range.length;
+
+        for entry in &self.0 {
+            let source_end = entry.src + entry.offset;
+
+            if range_end < entry.src || range.start > source_end {
+                continue;
+            }
+
+            if entry.src > range.start {
+                slices.insert(entry.src);
+            }
+
+            if source_end < range_end {
+                slices.insert(source_end);
+            }
+        }
+        slices.insert(range_end);
+
+        let mut output = Vec::new();
+        let mut current = range.start;
+
+        for position in slices {
+            output.push(ValueRange {
+                start: self.convert(current),
+                length: position - current,
+            });
+            current = position;
+        }
+
+        output
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct Almanac {
+    seeds: Vec<u64>,
+    maps: Vec<AlmanacMap>,
+}
+
+impl Almanac {
+    fn seed_to_location(&self, seed: u64) -> u64 {
+        self.maps.iter().fold(seed, |value, map| map.convert(value))
+    }
+
+    fn seed_ranges(&self) -> impl Iterator<Item = ValueRange> + '_ {
+        (0..self.seeds.len()).step_by(2).map(|i| ValueRange {
+            start: self.seeds[i],
+            length: self.seeds[i + 1],
+        })
+    }
 }
 
 fn parse_seeds(input: &str) -> IResult<&str, Vec<u64>> {
@@ -37,7 +123,7 @@ fn parse_conversion(input: &str) -> IResult<&str, Conversion> {
     ))
 }
 
-fn parse_map(input: &str) -> IResult<&str, Vec<Conversion>> {
+fn parse_map(input: &str) -> IResult<&str, AlmanacMap> {
     let (input, conversions) = preceded(
         permutation((
             opt(tag("\n\n")),
@@ -50,123 +136,42 @@ fn parse_map(input: &str) -> IResult<&str, Vec<Conversion>> {
         separated_list1(tag("\n"), parse_conversion),
     )(input)?;
 
-    Ok((input, conversions))
+    Ok((input, AlmanacMap(conversions)))
 }
 
-fn parse_maps(input: &str) -> IResult<&str, Vec<Vec<Conversion>>> {
-    let (input, convs) = separated_list1(tag("\n\n"), parse_map)(input)?;
+fn parse_almanac(input: &str) -> IResult<&str, Almanac> {
+    let (input, seeds) = parse_seeds(input).unwrap();
+    let (input, maps) = separated_list1(tag("\n\n"), parse_map)(input)?;
 
-    Ok((input, convs))
+    Ok((input, Almanac { seeds, maps }))
 }
 
 fn task_1(input: &str) -> u64 {
-    let (input, mut seeds) = parse_seeds(input).unwrap();
-    let maps = parse_maps(input).unwrap().1;
+    let almanac = parse_almanac(input).unwrap().1;
 
-    for conv_map in maps {
-        for s in seeds.iter_mut() {
-            for conv in conv_map.iter() {
-                if conv.src as u64 <= *s && conv.src + conv.offset >= *s {
-                    *s = (*s - conv.src) + conv.dest;
-                    break;
-                }
-            }
-        }
-    }
-
-    *seeds.iter().min().unwrap()
-}
-
-fn parse_seeds_tuple(input: &str) -> IResult<&str, Vec<Range<u64>>> {
-    let (input, tuples) = preceded(
-        tag("seeds: "),
-        separated_list1(tag(" "), separated_pair(u64, tag(" "), u64)),
-    )(input)?;
-
-    Ok((input, tuples.iter().map(|e| e.0..(e.0 + e.1)).collect()))
+    almanac
+        .seeds
+        .iter()
+        .map(|seed| almanac.seed_to_location(*seed))
+        .min()
+        .unwrap()
 }
 
 fn task_2(input: &str) -> u64 {
-    let (input, seeds) = parse_seeds_tuple(input).unwrap();
-    let maps = parse_maps(input).unwrap().1;
+    let almanac = parse_almanac(input).unwrap().1;
 
-    seeds
-        .iter()
-        .map(|seeds_range| {
-            let mut from: Vec<Range<u64>> = vec![seeds_range.to_owned()];
+    let mut current: Vec<ValueRange> = almanac.seed_ranges().collect();
+    let mut future = Vec::new();
 
-            for conv_map in maps.iter() {
-                let mut to: Vec<Range<u64>> = Vec::new();
-                
-                for seeds_range in from.iter() {
-                    for conv in conv_map.iter() {
-                        let diff = conv.dest as i64 - conv.src as i64;
+    for map in almanac.maps {
+        for range in current {
+            future.extend(map.convert_range(range));
+        }
+        current = future;
+        future = Vec::new();
+    }
 
-                        // start of seed range is in conv range
-                        if seeds_range.start >= conv.src
-                            && seeds_range.start <= conv.src + conv.offset
-                        {
-                            let s_conv = (seeds_range.start as i64 + diff) as u64;
-
-                            // end of seed range is in conv range
-                            if seeds_range.end >= conv.src
-                                && seeds_range.end <= conv.src + conv.offset
-                            {
-                                let e_conv = (seeds_range.end as i64 + diff) as u64;
-                                to.push(s_conv..e_conv);
-                                // break;
-                            }
-                            // end of seed range is not in conv range
-                            else {
-                                let e_conv = conv.dest + conv.offset;
-                                to.push(s_conv..e_conv);
-                                to.push((conv.src + conv.offset)..seeds_range.end);
-                                // break;
-                            }
-                        }
-                        // start of seeds is not in conv range
-                        else {
-                            let s_conv = conv.dest;
-
-                            // end of seeds range is in conv range
-                            if seeds_range.end >= conv.src
-                                && seeds_range.end <= conv.src + conv.offset
-                            {
-                                let e_conv = (seeds_range.end as i64 + diff) as u64;
-                                to.push(seeds_range.start..conv.src);
-                                to.push(s_conv..e_conv);
-                                // break;
-                            }
-                            // end of seed range is not in conv range
-                            else {
-                                // seeds range overlaps conv range
-                                if seeds_range.start < conv.src
-                                    && seeds_range.end > conv.src + conv.offset
-                                {
-                                    to.push(seeds_range.start..conv.src);
-                                    to.push(conv.dest..(conv.dest + conv.offset));
-                                    to.push((conv.src + conv.offset)..seeds_range.end);
-                                    // break;
-                                } else {
-                                    // to.push(seeds_range.start..seeds_range.end);
-                                    // break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if to.len() == 0 {
-                    to = from;
-                }
-
-                from = to;
-            }
-
-            from.iter().map(|i| i.start).min().unwrap()
-        })
-        .min()
-        .unwrap()
+    current.iter().map(|range| range.start).min().unwrap()
 }
 
 fn main() {
@@ -181,6 +186,7 @@ mod tests {
     use crate::*;
 
     #[test]
+    // #[ignore]
     fn task_1_works() {
         let input = "seeds: 79 14 55 13
 
