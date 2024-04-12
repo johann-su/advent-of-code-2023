@@ -1,16 +1,5 @@
-use std::collections::HashMap;
-
 use itertools::Itertools;
 use simple_matrix::Matrix;
-
-fn print_mat(mat: &Matrix<char>) {
-    for i in 0..mat.rows() {
-        for j in 0..mat.cols() {
-            print!(" {} ", mat.get(i, j).unwrap());
-        }
-        print!("\n");
-    }
-}
 
 fn move_stones(mat: &mut Matrix<char>) {
     for i in 0..mat.cols() {
